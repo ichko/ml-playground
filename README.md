@@ -2,7 +2,7 @@
 This repository contains ml experiments 
 
 ## Content
- - [playground/titanic.ipynb](Titanic)
+ - [Titanic](playground/titanic.ipynb)
 
 ## Resources
- - [http://fmi.machine-learning.bg](FMI ML Course)
+ - [FMI ML Course](http://fmi.machine-learning.bg)
