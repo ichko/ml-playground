@@ -2,6 +2,7 @@
 This repository contains ml experiments 
 
 ## Content
+ - [Homicide Reports Exploration](playground/homicide-exploration-hw.ipynb)
  - [Titanic](playground/titanic-hw.ipynb)
 
 ## Resources
