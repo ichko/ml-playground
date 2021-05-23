@@ -5,23 +5,12 @@ from functools import wraps
 import numpy as np
 
 import torch
+from torch.functional import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
 from tqdm import tqdm
-
-
-def extend(type):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            func(*args, **kwargs)
-
-        setattr(type, func.__name__, func)
-        return wrapper
-
-    return decorator
 
 
 class Module(nn.Module):
@@ -237,10 +226,6 @@ class Lambda(nn.Module):
         return self.forward(*args)
 
 
-def resize(t, size):
-    return F.interpolate(t, size, mode='bicubic', align_corners=True)
-
-
 def conv_block(i, o, ks, s, p, a=leaky(), d=1, bn=True):
     block = [nn.Conv2d(i, o, kernel_size=ks, stride=s, padding=p, dilation=d)]
     if bn:
@@ -282,7 +267,7 @@ def compute_output_shape(net, frame_shape):
     return out.shape
 
 
-class SpatialTransformer(nn.Module):
+class SpatialLinearTransformer(nn.Module):
     def __init__(self, i, num_channels, only_translations=False):
         super().__init__()
 
@@ -332,17 +317,6 @@ class SpatialTransformer(nn.Module):
         )
 
         return tensor_3d.reshape(-1, C, H, W)
-
-
-def one_hot(tensor, num_classes, dim):
-    tensor = F.one_hot(tensor.long(), num_classes=num_classes).float()
-    dim_permutation = list(range(tensor.dim()))
-    last_dim = dim_permutation.pop()
-
-    # Place last dim (one-hot) on the desired position
-    dim_permutation.insert(dim, last_dim)
-
-    return tensor.permute(dim_permutation)
 
 
 def sample_dim(tensor, n, dim, dim_size=None):
@@ -466,72 +440,66 @@ class TimeDistributed(nn.Module):
         return out
 
 
-# @extend(torch.Tensor)
-# @property
-def to_np(t):
-    return t.detach().cpu().numpy()
+def extend(type, is_property=False):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+
+        name = func.__name__
+        if is_property:
+            func = property(func)
+
+        setattr(type, name, func)
+        return wrapper
+
+    return decorator
 
 
-torch.Tensor.np = property(lambda self: to_np(self))
+class TensorWrapper:
+    def __init__(self, tensor):
+        self.tensor = tensor
 
+    @property
+    def raw(self):
+        return self.tensor
 
-@extend(torch.Tensor)
-def imshow(tensor, padding=3, figsize=(10, 10)):
-    """Plot 3-channel image tensorts.
-    Types:
-        tensor: Tensor[*A, 3, H, W]
-        return: AxesImage (matplotlib plot of the batch of images)
-    """
-    import matplotlib.pyplot as plt
+    @property
+    def np(self):
+        return self.tensor.detach().cpu().numpy()
 
-    if tensor.ndim == 4:
-        tensor = tensor.unsqueeze(1)  # [Cols, 1, 3, H, W]
+    def resize(self, size):
+        self.tensor = F.interpolate(
+            self.tensor, size, mode='bicubic', align_corners=True)
+        return self
 
-    if tensor.ndim > 3:  # assumes ndim == 5
-        nrows = tensor.shape[0]
-        tensor = tensor.reshape(-1, *tensor.shape[-3:])
-        tensor = torchvision.utils.make_grid(
-            tensor, nrow=nrows, padding=padding, normalize=True)
+    def grid(self, nr=None, padding=3):
+        if nr == None:
+            nr = self.tensor.size(0)
+        self.tensor = torchvision.utils.make_grid(
+            self.tensor, nrow=nr, padding=padding, normalize=True)
+        return self
 
-    tensor = tensor.permute(1, 2, 0)
-    tensor = tensor.np
+    def spread_bs(self, *split_shape):
+        shape = self.tensor.shape
+        _bs, rest_dims = shape[0], shape[1:]
+        self.tensor = self.tensor.reshape(*split_shape, *rest_dims)
+        return self
 
-    fig = plt.figure(figsize=figsize)
-    ax = fig.subplots(1, 1)
-    return ax.imshow(tensor)
+    def imshow(self, figsize=(16, 16)):
+        import matplotlib.pyplot as plt
 
+        tensor = self.raw
+        tensor = tensor.permute(1, 2, 0)
+        tensor = TensorWrapper(tensor).np
+        fig = plt.figure(figsize=figsize)
 
-@extend(torch.Tensor)
-def heatmap(tensor, padding=3, cmap='viridis', figsize=(10, 1)):
-    """Plot 1-channel image tensorts as heatmap.
-    Types:
-        tensor: Tensor[*A, H, W]
-        return: AxesImage (matplotlib plot of the batch of images)
-    """
-    import matplotlib.pyplot as plt
+        ax = fig.subplots(1, 1)
+        ax.imshow(tensor)
 
-    if tensor.ndim == 3:
-        tensor = tensor.unsqueeze(1)  # [Cols, 1, H, W]
+        return self
 
-    if tensor.ndim > 2:  # assumes ndim == 4
-        nrows = tensor.shape[0]
-        tensor = tensor.unsqueeze(2)  # [Cols, Rows, 1, H, W]
-        # [Cols * Rows, 1, H, W]
-        tensor = tensor.reshape(-1, *tensor.shape[-3:])
-        # [1, H * Cols, W * Cols]
-        tensor = torchvision.utils.make_grid(
-            tensor, nrow=nrows, padding=padding, normalize=True)
-        tensor = tensor[0]  # [H, W]
-
-    fig = plt.figure(figsize=figsize)
-    ax = fig.subplots(1, 1)
-    return ax.imshow(tensor.np, cmap=cmap)
-
-
-if __name__ == '__main__':
-    # Sanity check mask_sequence
-    tensor = torch.rand(2, 3, 4)
-    mask = torch.rand(2, 3) > 0.5
-    masked = mask_sequence(tensor, mask)
-    print(mask)
-    print(masked)
+    @staticmethod
+    @extend(torch.Tensor, is_property=True)
+    def wrap(tensor):
+        return TensorWrapper(tensor=tensor)
