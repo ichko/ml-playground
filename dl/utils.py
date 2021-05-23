@@ -32,7 +32,7 @@ class Module(nn.Module):
 
     def save(self, path=None):
         path = path if self.path is None else path
-        torch.save(self, f'{self.path}_whole.h5')
+        torch.save(self, f"{self.path}_whole.h5")
 
     def can_be_preloaded(self):
         return os.path.isfile(self.path)
@@ -50,16 +50,17 @@ class Module(nn.Module):
     def summary(self, input_size=-1):
         try:
             from torchsummary import summary
+
             summary(self, input_size)
             return
         except Exception:
             pass
 
-        result = f' > {self.name[:38]:<38} | {count_parameters(self):09,}\n'
+        result = f" > {self.name[:38]:<38} | {count_parameters(self):09,}\n"
         for name, module in self.named_children():
             type = module._get_name()
             num_prams = count_parameters(module)
-            result += f' >  {name[:20]:>20}: {type[:15]:<15} | {num_prams:9,}\n'
+            result += f" >  {name[:20]:>20}: {type[:15]:<15} | {num_prams:9,}\n"
 
         print(result)
 
@@ -89,17 +90,19 @@ class Module(nn.Module):
             loss.backward()
             self.optim.step()
 
-        metrics = self.metrics({
-            'loss': loss,
-            'X': X,
-            'y': y,
-            'y_pred': y_pred,
-        })
+        metrics = self.metrics(
+            {
+                "loss": loss,
+                "X": X,
+                "y": y,
+                "y_pred": y_pred,
+            }
+        )
 
         return {
-            'metrics': metrics,
-            'loss': loss,
-            'y_pred': y_pred,
+            "metrics": metrics,
+            "loss": loss,
+            "y_pred": y_pred,
         }
 
 
@@ -285,29 +288,35 @@ class SpatialLinearTransformer(nn.Module):
             torch.tensor(
                 [1, 0, 0, 0, 1, 0] * num_channels,
                 dtype=torch.float,
-            ).to(self.device))
+            ).to(self.device)
+        )
 
     def forward(self, x):
         inp, tensor_3d = x
 
         theta = self.locator(inp)
-        _, C, H, W, = tensor_3d.shape
+        (
+            _,
+            C,
+            H,
+            W,
+        ) = tensor_3d.shape
 
         if self.only_translations:
-            theta[:, :, :-1] = torch.tensor(
-                [[1, 0], [0, 1]],
-                dtype=torch.float,
-            ).to(self.device).unsqueeze_(0)
+            theta[:, :, :-1] = (
+                torch.tensor(
+                    [[1, 0], [0, 1]],
+                    dtype=torch.float,
+                )
+                .to(self.device)
+                .unsqueeze_(0)
+            )
 
         grid = F.affine_grid(
             theta,
             (theta.size(dim=0), 1, H, W),
             align_corners=True,
         )
-
-        # Last values
-        self.grid = grid
-        self.theta = theta
 
         tensor_3d = tensor_3d.reshape(-1, 1, H, W)
         tensor_3d = F.grid_sample(
@@ -317,6 +326,30 @@ class SpatialLinearTransformer(nn.Module):
         )
 
         return tensor_3d.reshape(-1, C, H, W)
+
+
+class SpatialUVTransformer(nn.Module):
+    def __init__(self, i, uv_resolution_shape):
+        super().__init__()
+
+        self.uv_resolution_shape = uv_resolution_shape
+        self.infer_uv = nn.Sequential(
+            nn.Linear(i, np.prod(self.uv_resolution_shape) * 2),
+            Reshape(-1, 2, *self.uv_resolution_shape),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        inp, tensor_3d = x
+        uv_map = self.infer_uv(inp)
+        H, W = tensor_3d.shape[-2:]
+        uv_map = uv_map.wrap.resize(H, W).raw.permute(0, 2, 3, 1)
+        tensor_3d = F.grid_sample(
+            tensor_3d,
+            uv_map,
+            align_corners=True,
+        )
+        return tensor_3d
 
 
 def sample_dim(tensor, n, dim, dim_size=None):
@@ -346,7 +379,7 @@ def sample_padded_sequences(sequences, lens, sample_size):
             dim=0,
             dim_size=length,
         )
-        data[i, :sample.size(0)] = sample
+        data[i, : sample.size(0)] = sample
 
     return data, new_lens
 
@@ -412,7 +445,7 @@ def time_distribute(module, input=None):
 
     out = module(input)  # should return iterable or tensor
 
-    if hasattr(out, 'view'):
+    if hasattr(out, "view"):
         # assume it is tensor:
         return out.view(bs, seq_len, *out.shape[1:])
 
@@ -468,16 +501,18 @@ class TensorWrapper:
     def np(self):
         return self.tensor.detach().cpu().numpy()
 
-    def resize(self, size):
+    def resize(self, *size):
         self.tensor = F.interpolate(
-            self.tensor, size, mode='bicubic', align_corners=True)
+            self.tensor, size, mode="bicubic", align_corners=True
+        )
         return self
 
     def grid(self, nr=None, padding=3):
         if nr == None:
             nr = self.tensor.size(0)
         self.tensor = torchvision.utils.make_grid(
-            self.tensor, nrow=nr, padding=padding, normalize=True)
+            self.tensor, nrow=nr, padding=padding, normalize=True
+        )
         return self
 
     def spread_bs(self, *split_shape):
