@@ -1,32 +1,52 @@
 import os
-from utils import Lambda, SpatialLinearTransformer, Module
+from argparse import Namespace
+
+from utils import Lambda, SpatialLinearTransformer, Module, SpatialUVTransformer
 
 from tqdm.auto import tqdm
 
 import torch
 from torch import nn
 from torch.nn import functional as F
-import cv2
 import torchvision
+import cv2
+
+import wandb
 
 
 class DocumentDataset(torch.utils.data.Dataset):
-    def __init__(self, repeat=1):
+    def __init__(self, repeat=1, device="cpu"):
         super().__init__()
         self.repeat = repeat
-        self.imgs = self.load_images('.data/x')
-        self.target = self.load_images('.data/y')[0]
+        self.device = device
+        self.imgs = self.load_images(".data/x")
+        self.target = self.load_images(".data/y")[0]
 
     def __len__(self):
         return len(self.imgs) * self.repeat
 
     def __getitem__(self, idx):
         idx = idx % len(self.imgs)
-        return {'x': self.imgs[idx], 'y': self.target}
+        return {
+            "x": self.imgs[idx].to(self.device),
+            "y": self.target.to(self.device),
+        }
+
+    @staticmethod
+    def get_example_batch(size, device):
+        dl = DocumentDataset.get_dl(
+            bs=size,
+            shuffle=False,
+            repeat=size,
+            device=device,
+        )
+        it = iter(dl)
+        batch = next(it)
+        return batch
 
     @staticmethod
     def load_images(path):
-        file_names = [f for f in os.listdir(path) if f.endswith('jpg')]
+        file_names = [f for f in os.listdir(path) if f.endswith("jpg")]
         imgs = []
         scale = 0.1
         W, H = 2138, 2997
@@ -45,10 +65,16 @@ class DocumentDataset(torch.utils.data.Dataset):
         return torch.tensor(imgs, dtype=torch.float32)
 
     @staticmethod
-    def get_dl(bs, shuffle, repeat=1):
-        dataset = DocumentDataset(repeat=repeat)
+    def get_dl(bs, shuffle, repeat=1, device="cpu"):
+        dataset = DocumentDataset(
+            repeat=repeat,
+            device=device,
+        )
         dl = torch.utils.data.DataLoader(
-            dataset=dataset, batch_size=bs, shuffle=shuffle)
+            dataset=dataset,
+            batch_size=bs,
+            shuffle=shuffle,
+        )
         return dl
 
     @staticmethod
@@ -58,7 +84,7 @@ class DocumentDataset(torch.utils.data.Dataset):
         dl = DocumentDataset.get_dl(bs=16, shuffle=False, repeat=10)
         it = iter(dl)
         batch = next(it)
-        batch['x'].wrap.grid(nr=4).imshow(figsize=(8, 8))
+        batch["x"].wrap.grid(nr=4).imshow(figsize=(8, 8))
         # plt.close()
 
 
@@ -66,7 +92,14 @@ class GeometricTransformModel(Module):
     def __init__(self):
         super().__init__()
         self.feature_extractor = torchvision.models.resnet50(pretrained=True)
-        self.st = SpatialLinearTransformer(1000, num_channels=1)
+        # self.st = SpatialUVTransformer(
+        #     i=1000,
+        #     uv_resolution_shape=(30, 20),
+        # )
+        self.st = SpatialLinearTransformer(
+            i=1000,
+            num_channels=1,
+        )
 
     def forward(self, x):
         self.features = self.feature_extractor(x)
@@ -79,7 +112,7 @@ class GeometricTransformModel(Module):
         return F.binary_cross_entropy(y_hat, y)
 
     def optim_step(self, optim, batch):
-        x, y = batch['x'], batch['y']
+        x, y = batch["x"], batch["y"]
         y_hat = self(x)
         loss = self.criterion(y_hat, y)
 
@@ -89,27 +122,59 @@ class GeometricTransformModel(Module):
             optim.step()
 
         return {
-            'loss': loss.item(),
-            'features': self.features,
-            'y_hat': y_hat,
+            "loss": loss.item(),
+            "features": self.features,
+            "y_hat": y_hat,
         }
 
 
 def main():
-    dl = DocumentDataset.get_dl(bs=16, shuffle=False, repeat=10)
+    DEVICE = "cuda"
+    example_batch = DocumentDataset.get_example_batch(
+        size=16,
+        device=DEVICE,
+    )
+    dl = DocumentDataset.get_dl(
+        bs=32,
+        shuffle=False,
+        repeat=100,
+        device=DEVICE,
+    )
     model = GeometricTransformModel()
-    optim = torch.optim.Adam(model.parameters(), lr=0.000001)
-    epochs = 8
+    hparams = Namespace(lr=0.00003)
+    optim = torch.optim.Adam(model.parameters(), lr=hparams.lr)
+    epochs = 200
+
+    model = model.to(DEVICE)
+
+    wandb.init(
+        name="UV Transformer",
+        dir=".reports",
+        project="rectify",
+        config=dict(
+            vars(hparams),
+            name=model.name,
+            model_num_params=model.count_parameters(),
+        ),
+    )
 
     epoch_bar = tqdm(range(epochs))
-    for e in epoch_bar:
+    for _e in epoch_bar:
         batch_bar = tqdm(dl)
+        model.train()
         for batch in batch_bar:
             optim_info = model.optim_step(optim, batch)
-            loss = optim_info['loss']
+            loss = optim_info["loss"]
+            wandb.log({"train_loss": loss})
 
-            batch_bar.set_description(f'Loss: {loss:.5f}')
+            batch_bar.set_description(f"Loss: {loss:.5f}")
+
+        with torch.no_grad():
+            model.eval()
+            example_info = model.optim_step(optim, example_batch)
+        imgs = example_info["y_hat"]
+        wandb.log({"example_batch_imgs": [wandb.Image(i) for i in imgs]})
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
