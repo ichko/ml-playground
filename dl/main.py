@@ -1,17 +1,14 @@
 import os
 from argparse import Namespace
 
-from utils import Lambda, SpatialLinearTransformer, Module, SpatialUVTransformer
-
-from tqdm.auto import tqdm
-
+import cv2
 import torch
+import torchvision
+import wandb
+from ez_torch import Module, SpatialLinearTransformer
 from torch import nn
 from torch.nn import functional as F
-import torchvision
-import cv2
-
-import wandb
+from tqdm.auto import tqdm
 
 
 class DocumentDataset(torch.utils.data.Dataset):
