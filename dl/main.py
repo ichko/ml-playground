@@ -81,7 +81,7 @@ class DocumentDataset(torch.utils.data.Dataset):
         dl = DocumentDataset.get_dl(bs=16, shuffle=False, repeat=10)
         it = iter(dl)
         batch = next(it)
-        batch["x"].wrap.grid(nr=4).imshow(figsize=(8, 8))
+        batch["x"].ez.grid(nr=4).imshow(figsize=(8, 8))
         # plt.close()
 
 
