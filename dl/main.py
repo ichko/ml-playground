@@ -1,17 +1,28 @@
+import logging
 import os
 from argparse import Namespace
 
 import cv2
+import ez_torch
+import kornia
 import torch
 import torchvision
 import wandb
-from ez_torch import Module, SpatialLinearTransformer
+from ez_torch.models import Module, SpatialUVOffsetTransformer
 from torch import nn
 from torch.nn import functional as F
 from tqdm.auto import tqdm
 
+logger = logging.getLogger()
+
 
 class DocumentDataset(torch.utils.data.Dataset):
+    W = 2138
+    H = 2997
+    scale = 0.1
+    w, h = int(W * scale), int(H * scale)
+    ar = W / H
+
     def __init__(self, repeat=1, device="cpu"):
         super().__init__()
         self.repeat = repeat
@@ -41,13 +52,10 @@ class DocumentDataset(torch.utils.data.Dataset):
         batch = next(it)
         return batch
 
-    @staticmethod
-    def load_images(path):
+    @classmethod
+    def load_images(cls, path):
         file_names = [f for f in os.listdir(path) if f.endswith("jpg")]
         imgs = []
-        scale = 0.1
-        W, H = 2138, 2997
-        w, h = int(W * scale), int(H * scale)
 
         for file_name in file_names:
             im_path = os.path.join(path, file_name)
@@ -55,7 +63,7 @@ class DocumentDataset(torch.utils.data.Dataset):
             i_h, i_w, _ = img.shape
             if i_w > i_h:
                 img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-            img = cv2.resize(img, (w, h))
+            img = cv2.resize(img, (cls.w, cls.h))
             img = img.transpose(2, 0, 1)
             imgs.append(img / 255)
 
@@ -86,16 +94,13 @@ class DocumentDataset(torch.utils.data.Dataset):
 
 
 class GeometricTransformModel(Module):
-    def __init__(self):
+    def __init__(self, res_w, res_h):
         super().__init__()
+
         self.feature_extractor = torchvision.models.resnet50(pretrained=True)
-        # self.st = SpatialUVTransformer(
-        #     i=1000,
-        #     uv_resolution_shape=(30, 20),
-        # )
-        self.st = SpatialLinearTransformer(
+        self.st = SpatialUVOffsetTransformer(
             i=1000,
-            num_channels=1,
+            uv_resolution_shape=(res_w, res_h),
         )
 
     def forward(self, x):
@@ -137,40 +142,39 @@ def main():
         repeat=100,
         device=DEVICE,
     )
-    model = GeometricTransformModel()
-    hparams = Namespace(lr=0.00003)
-    optim = torch.optim.Adam(model.parameters(), lr=hparams.lr)
-    epochs = 200
-
-    model = model.to(DEVICE)
-
+    hparams = Namespace(lr=0.00003, epochs=10)
     wandb.init(
         name="UV Transformer",
         dir=".reports",
         project="rectify",
-        config=dict(
-            vars(hparams),
-            name=model.name,
-            model_num_params=model.count_parameters(),
-        ),
+        config=hparams,
     )
 
-    epoch_bar = tqdm(range(epochs))
-    for _e in epoch_bar:
-        batch_bar = tqdm(dl)
-        model.train()
-        for batch in batch_bar:
-            optim_info = model.optim_step(optim, batch)
-            loss = optim_info["loss"]
-            wandb.log({"train_loss": loss})
+    for res in range(5, 10):
+        res_w = res
+        res_h = int(res_w / DocumentDataset.ar)
+        logging.info(f"res {res_w} {res_h}")
 
-            batch_bar.set_description(f"Loss: {loss:.5f}")
+        model = GeometricTransformModel(res_w, res_h)
+        model = model.to(DEVICE)
+        optim = torch.optim.Adam(model.parameters(), lr=hparams.lr)
 
-        with torch.no_grad():
-            model.eval()
-            example_info = model.optim_step(optim, example_batch)
-        imgs = example_info["y_hat"]
-        wandb.log({"example_batch_imgs": [wandb.Image(i) for i in imgs]})
+        for _e in tqdm(range(hparams.epochs)):
+            model.train()
+
+            batch_bar = tqdm(dl)
+            for batch in batch_bar:
+                optim_info = model.optim_step(optim, batch)
+                loss = optim_info["loss"]
+                wandb.log({"train_loss": loss})
+
+                batch_bar.set_description(f"Loss: {loss:.5f}")
+
+            with torch.no_grad():
+                model.eval()
+                example_info = model.optim_step(optim, example_batch)
+            imgs = example_info["y_hat"].ez.grid(nr=4).raw
+            wandb.log({"example_batch_imgs": [wandb.Image(imgs)]})
 
 
 if __name__ == "__main__":
