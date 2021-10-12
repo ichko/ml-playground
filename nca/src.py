@@ -35,10 +35,10 @@ def load_emoji(emoji):
     return load_image(url)
 
 
-def plot_loss(loss_log):
+def plot_loss(loss):
     plt.figure(figsize=(10, 4))
     plt.title("Loss history (log10)")
-    plt.plot(np.log10(loss_log), ".", alpha=0.2)
+    plt.plot(loss, ".", alpha=0.2)
     plt.show()
 
 
@@ -213,6 +213,7 @@ class NoisyChannel(nn.Module):
         return self.encoder(input, steps)
 
     def training_step(self, bs, steps):
+        self.train()
         self.optim.zero_grad()
 
         input, msg = self.generate_seeded_input(bs)
@@ -223,7 +224,7 @@ class NoisyChannel(nn.Module):
         msg_pred = self.decoder(x[:, :3])
 
         loss = F.mse_loss(msg_pred, msg)
-        loss += x.mean()
+        loss += x.mean() * 0.01
 
         loss.backward()
         self.optim.step()
@@ -234,13 +235,13 @@ class NoisyChannel(nn.Module):
 def generate_video(model, steps=250):
     model.eval()
     with torch.no_grad():
-        seq = model(bs=9, steps=steps)
+        seq = model(bs=10, steps=steps)
 
         # TODO: This should be vectorized
         grid_video = []
         for i in range(seq.size(1)):  # for each time step
             snap = seq[:, i]
-            grid = torchvision.utils.make_grid(snap, nrow=3, padding=1)
+            grid = torchvision.utils.make_grid(snap, nrow=5, padding=1)
             grid_video.append(grid)
         grid_video = torch.stack(grid_video, dim=0)
         grid_video = grid_video[:, :3]
