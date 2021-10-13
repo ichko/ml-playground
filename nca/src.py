@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 from IPython.display import Image, HTML, clear_output, display
 from ipywidgets import Output
 from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
+from matplotlib import cm
 
 
 def load_image(url, max_size=100):
@@ -156,11 +157,15 @@ class CAEncoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, output_size):
+    def __init__(self, in_channels, output_size):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(
-                in_channels=3, out_channels=32, kernel_size=(3, 3), stride=2, padding=1
+                in_channels=in_channels,
+                out_channels=32,
+                kernel_size=(3, 3),
+                stride=2,
+                padding=1,
             ),
             nn.ReLU(inplace=True),
             nn.Conv2d(
@@ -180,15 +185,24 @@ class Decoder(nn.Module):
 
 
 class NoisyChannel(nn.Module):
-    def __init__(self, msg_size, seed_shape, encoder, decoder, noise):
+    def __init__(
+        self,
+        msg_size,
+        seed_shape,
+        encoder,
+        decoder,
+        noise,
+        num_decode_channels,
+    ):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.noise = noise
+        self.num_decode_channels = num_decode_channels
 
         self.msg_size = msg_size
         self.seed_shape = seed_shape
-        self.optim = torch.optim.SGD(
+        self.optim = torch.optim.Adam(
             [*self.encoder.parameters(), *self.decoder.parameters()],
             lr=0.001,
         )
@@ -210,7 +224,8 @@ class NoisyChannel(nn.Module):
 
     def forward(self, bs, steps):
         input, msg = self.generate_seeded_input(bs)
-        return self.encoder(input, steps)
+        x = self.encoder(input, steps)
+        return x[:, :, : self.num_decode_channels]
 
     def training_step(self, bs, steps):
         self.train()
@@ -221,10 +236,9 @@ class NoisyChannel(nn.Module):
         x = self.noise(x)
         x = self.encoder(x, steps // 2)[:, -1]
 
-        msg_pred = self.decoder(x[:, :3])
+        msg_pred = self.decoder(x[:, : self.num_decode_channels])
 
         loss = F.mse_loss(msg_pred, msg)
-        loss += x.mean() * 0.01
 
         loss.backward()
         self.optim.step()
@@ -236,20 +250,28 @@ def generate_video(model, steps=250):
     model.eval()
     with torch.no_grad():
         seq = model(bs=10, steps=steps)
+        is_single_channel = seq.shape[2] == 1  # if image num channels is 1
 
         # TODO: This should be vectorized
         grid_video = []
         for i in range(seq.size(1)):  # for each time step
             snap = seq[:, i]
             grid = torchvision.utils.make_grid(snap, nrow=5, padding=1)
+
+            if is_single_channel:
+                grid = grid[:1]
             grid_video.append(grid)
+
         grid_video = torch.stack(grid_video, dim=0)
-        grid_video = grid_video[:, :3]
         grid_video = grid_video.permute(0, 2, 3, 1)
 
         with VideoWriter("test.ignore.mp4") as vid:
             for frame in grid_video:
                 np_frame = frame.ez.np
+
+                if np_frame.shape[-1] == 1:
+                    np_frame = cm.viridis(np_frame[:, :, 0])[:, :, :3]
+
                 np_frame = zoom(np_frame, scale=5)
                 vid.add(np_frame)
 
