@@ -117,41 +117,44 @@ class CAEncoder(nn.Module):
         self.net = nn.Sequential(
             nn.Conv2d(
                 in_channels=num_chanels,
-                out_channels=64,
+                out_channels=32,
                 kernel_size=(3, 3),
                 stride=1,
                 padding=1,
             ),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(0.05),
             nn.Conv2d(
-                in_channels=64,
-                out_channels=64,
+                in_channels=32,
+                out_channels=128,
                 kernel_size=(1, 1),
                 stride=1,
                 padding=0,
             ),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(0.05),
             nn.Conv2d(
-                in_channels=64,
-                out_channels=num_chanels,
+                in_channels=128,
+                out_channels=num_chanels * 2,
                 kernel_size=(1, 1),
                 stride=1,
                 padding=0,
             ),
-            nn.Tanh(),
         )
 
-        # self.net[0].weight.data.normal_()
+        std = 0.2
+        self.net[0].weight.data.normal_(0, std)
         self.net[0].bias.data.zero_()
-        # self.net[2].weight.data.normal_()
+        self.net[2].weight.data.normal_(0, std)
         self.net[2].bias.data.zero_()
-        # self.net[4].weight.data.normal_()
+        self.net[4].weight.data.normal_(0, std)
         self.net[4].bias.data.zero_()
 
     def forward(self, x, steps):
         seq = [x]
         for i in range(steps):
-            x = x + self.net(x)
+            gate, new = self.net(x).chunk(2, dim=1)
+            gate = torch.sigmoid(gate)
+            new = torch.sigmoid(new) * 2 - 1
+            x = gate * x + (1 - gate) * new
             seq.append(x)
         return torch.stack(seq, dim=1)
 
@@ -162,20 +165,28 @@ class Decoder(nn.Module):
         self.net = nn.Sequential(
             nn.Conv2d(
                 in_channels=in_channels,
+                out_channels=128,
+                kernel_size=(3, 3),
+                stride=2,
+                padding=1,
+            ),
+            nn.LeakyReLU(0.05),
+            nn.Conv2d(
+                in_channels=128,
+                out_channels=64,
+                kernel_size=(3, 3),
+                stride=2,
+                padding=1,
+            ),
+            nn.LeakyReLU(0.05),
+            nn.Conv2d(
+                in_channels=64,
                 out_channels=32,
                 kernel_size=(3, 3),
                 stride=2,
                 padding=1,
             ),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(
-                in_channels=32, out_channels=32, kernel_size=(3, 3), stride=2, padding=1
-            ),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(
-                in_channels=32, out_channels=32, kernel_size=(3, 3), stride=2, padding=1
-            ),
-            nn.ReLU(inplace=True),
+            nn.LeakyReLU(0.05),
             nn.Flatten(),
             nn.Linear(512, output_size),
         )
@@ -191,13 +202,11 @@ class NoisyChannel(nn.Module):
         seed_shape,
         encoder,
         decoder,
-        noise,
         num_decode_channels,
     ):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.noise = noise
         self.num_decode_channels = num_decode_channels
 
         self.msg_size = msg_size
@@ -225,16 +234,17 @@ class NoisyChannel(nn.Module):
     def forward(self, bs, steps):
         input, msg = self.generate_seeded_input(bs)
         x = self.encoder(input, steps)
-        return x[:, :, : self.num_decode_channels]
+        x = x[:, :, : self.num_decode_channels]
+        x = x * 0.5 + 0.5
+        return x
 
-    def training_step(self, bs, steps):
+    def training_step(self, bs, noise, steps):
         self.train()
         self.optim.zero_grad()
 
         input, msg = self.generate_seeded_input(bs)
-        x = self.encoder(input, steps // 2)[:, -1]
-        x = self.noise(x)
-        x = self.encoder(x, steps // 2)[:, -1]
+        x = self.encoder(input, steps)[:, -1]
+        x = noise(x)
 
         msg_pred = self.decoder(x[:, : self.num_decode_channels])
 
@@ -251,6 +261,7 @@ def generate_video(model, steps=250):
     with torch.no_grad():
         seq = model(bs=10, steps=steps)
         is_single_channel = seq.shape[2] == 1  # if image num channels is 1
+        # print(seq.min(), seq.max())
 
         # TODO: This should be vectorized
         grid_video = []
